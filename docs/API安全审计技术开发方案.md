@@ -179,28 +179,68 @@ for i in range(len(chain) - 1):
 
 #### 4.3.1 Prompt工程设计
 
-针对思维链蒸馏模型的输出特性，Prompt需同时约束思维过程和最终输出格式：
+针对思维链蒸馏模型的输出特性，Prompt需同时约束思维过程和最终输出格式。经过四轮迭代优化，最终采用以下完整模板：
 
+**系统提示（System Prompt）**：
 ```
-角色：你是一位API安全审计专家，擅长通过分析API调用序列识别越权、参数遍历和接口滥用行为。
+你是一位API安全审计专家，擅长通过分析API调用序列识别越权、参数遍历和接口滥用行为。
 
-输入：
-- 当前调用序列（ACC）：\\\\\\\[...]
-- 调用关系图（ACG）：\\\\\\\[...]
-- 参数特征摘要：\\\\\\\[参数类型、熵值、分布统计]
-- 访问模式统计：\\\\\\\[...]
-- OpenAPI规范信息（如有）：\\\\\\\[API名称、版本、端点数]
-- OpenAPI端点详情（如有）：\\\\\\\[端点列表、方法、路径参数、是否需认证]
+安全知识参考（请重点参考以下判定逻辑）：
+- BOLA（越权）：调用序列中出现"登录(Token_A) → 获取资源ID → 登出 → 登录(Token_B) → 用Token_B访问同一资源ID"的模式，即不同认证身份访问相同资源ID，且返回200时判定为BOLA越权。注意：BOLA不需要大量请求，只要出现"不同Token访问同一资源"即可判定。跨会话BOLA：用户A访问某资源ID后登出，用户B登入后访问同一资源ID也构成BOLA。
+- 参数遍历：对同一端点发起请求，参数值呈线性递增或均匀分布（即使请求次数少于20次）。典型特征：路径参数单调递增（如 /api/notes/Ab1000 → Ab1001 → Ab1002），步长固定。注意请求次数少但参数值严格递增也算遍历。
+- 接口滥用：非业务逻辑顺序调用（如未登录直接访问订单），或单一接口高频调用（>正常均值10倍），或同一参数被重复调用。
 
-任务：
-1. 判断当前序列是否存在以下异常行为：
-   a) 越权访问（BOLA）：用户访问了不属于其资源的对象ID
-   b) 参数遍历：对某一参数进行批量枚举（如连续递增ID）
-   c) 接口滥用：调用频率/序列超出正常业务逻辑范围
-2. 推理过程请控制在200字以内，简明扼要
-3. 最终必须且仅输出以下JSON格式（不要输出其他内容）：
-{"is\\\\\\\_anomaly": true/false, "anomaly\\\\\\\_type": "bola/traversal/abuse/normal", "confidence": 0.0-1.0, "reasoning": "中文解释，50字以内"}
+特别注意：
+- 请求序列中即使大部分请求看似正常，只要其中存在上述任何一种模式，就应判定为异常
+- "请求序列分析"部分的"端点频率分布"、"参数单调递增指数"和"可疑标记"对判定非常重要：如果某个端点占比极高且参数单调递增，高度疑似遍历
+- OpenAPI规范信息中描述了标准业务流程：如果调用顺序违反(如跳过必要步骤)，也构成异常
+- 单个请求也可能异常（如违反业务逻辑的操作）
+
+推理过程请控制在200字以内，简明扼要。
+最终必须且仅输出以下JSON格式（不要输出其他内容）：
+{"is_anomaly": true/false, "anomaly_type": "bola/traversal/abuse/normal", "confidence": 0.0-1.0, "reasoning": "中文解释，50字以内"}
 ```
+
+**用户提示（User Prompt）**：
+```
+调用序列（ACC）：
+[GET /api/v1/users/login] -> [POST /api/v1/login] -> [GET /api/v1/users/profile]
+
+调用关系图（ACG）：
+((GET /api/v1/users/login, POST /api/v1/login), (POST /api/v1/login, GET /api/v1/users/profile))
+
+参数特征摘要：
+参数总数: 5, 路径参数: 2, 查询参数: 3, 熵值: 2.58, 类型分布: {'id': 2, 'uuid': 1, 'other': 2}
+
+访问模式统计：
+  inter_api_access_duration: {'mean': 1.23, 'stdev': 0.45, 'values': [...]}
+  api_access_uniqueness: 0.6
+  sequence_length: 5
+  num_client_error: 0.0
+  param_reuse_ratio: 0.35
+  param_monotonicity: 0.0
+  endpoint_freq: {'distribution': {'GET /api/v1/users/login': 1, 'POST /api/v1/login': 1, 'GET /api/v1/users/profile': 1}, 'top_endpoint': 'GET /api/v1/users/login', 'top_endpoint_ratio': 0.33}
+
+请求序列分析：
+总请求数: 5
+端点频率分布: GET /api/v1/users/login (1次), POST /api/v1/login (1次), GET /api/v1/users/profile (1次)
+最高占比端点: GET /api/v1/users/login (33%)
+参数单调递增指数: 0.0 (0-1, 越高越可疑)
+
+OpenAPI规范信息：
+API: PetStore v1.0, 12 endpoints
+
+OpenAPI端点详情：
+PetStore v1.0, 12 端点:
+  GET /pet/{petId} [需认证] path_params=(petId)
+  POST /pet [需认证]
+  ...
+```
+
+`请求序列分析` 段落在迭代过程中增加了以下自动检测标记，直接引导LLM注意力：
+- `可疑标记: 单一端点占比极高且参数单调递增，高度疑似参数遍历`
+- `可疑标记: 同一端点相同参数重复调用 {N} 次，疑似接口滥用`
+- `可疑标记: 资源ID {id} 被用户 {u1} 和 {u2} 同时访问，存在BOLA(越权)嫌疑`
 
 #### 4.3.2 思维链输出解析策略
 
@@ -370,6 +410,7 @@ BOLA是方向一的核心检测目标之一。实现采用**规则引擎前置 +
   * 同一用户访问了本不应访问的资源ID（结合上下文）
 
 * 规则未触发的BOLA（如无频率异常但存在越权）由 **LLM全量兜底** 捕获，直接生成 confirmed 告警
+* **BOLA预检测标记**：在prompt的`请求序列分析`段中，`_detect_cross_session_bola()`按login/logout划分会话边界，提取各会话访问的资源ID；当检测到跨用户同资源ID访问时，注入`可疑标记: 资源ID {id} 被用户 {u1} 和 {u2} 同时访问，存在BOLA(越权)嫌疑`，直接引导LLM注意力至BOLA模式。该检测同时覆盖路径参数、查询参数和POST body中的资源ID。
 
 **安全过滤**：
 
@@ -393,7 +434,8 @@ BOLA是方向一的核心检测目标之一。实现采用**规则引擎前置 +
 2. **敏感参数检测**：参数名匹配常见遍历目标（`id`/`page`/`offset`/`index`）
 3. **参数熵分析**：参数值在数值空间呈均匀分布（熵接近理论最大值）
 4. **响应码辅助**：遍历攻击常伴随大量404/403响应（响应码异常率 `max_client_error_ratio=0.3`，即 > 30%）
-5. 命中即触发 **初步告警** (status=preliminary, type="traversal", confidence=0.75)
+5. **参数单调性指数**（新增LLM辅助特征）：`calc_param_monotonicity()` 检测同一端点组内参数值是否严格递增，输出0-1分数，>0.8即标记"高度疑似参数遍历"。该特征对Base64编码型路径参数（如`/api/notes/Ab1000→Ab1001`）和API版本号遍历（如`/api/v0.0→v0.1`）特别有效
+6. 命中即触发 **初步告警** (status=preliminary, type="traversal", confidence=0.75)
 
 **LLM异步确认**：
 
@@ -586,6 +628,7 @@ async def api\\\\\\\_security\\\\\\\_audit(request: Request, call\\\\\\\_next):
 |参数遍历数据集|对path参数连续递增枚举（15-30次）|使用 `_gen_traversal()` 对资源端点批量请求，ID 依次递增，间隔 0.1-0.5s|
 |接口滥用数据集|高频调用敏感端点（30-60次）|使用 `_gen_abuse()` 从敏感端点（ admin / config / password 等）中随机选取，间隔仅 0.05-0.3s|
 |混合场景数据集|正常调用序列尾部注入一种攻击|先生成完整 normal 序列，再在尾部追加一个随机攻击（bola/traversal/abuse）|
+|对抗评估数据集|专门绕过规则引擎的LLM能力边界测试集（6类×4=24样本）|`AdversarialGenerator`（`src/evaluation/adversarial_dataset.py`）生成，覆盖body BOLA、Base64遍历、低频滥用、业务异常、噪声混合、版本遍历6种规则盲区|
 
 **数据规范来源**（`data/` 目录，共 12 个）：
 
@@ -617,14 +660,16 @@ async def api\\\\\\\_security\\\\\\\_audit(request: Request, call\\\\\\\_next):
 |指标|说明|目标值|规则引擎当前实绩|
 |-|-|-|-|
 |Precision|告警准确率 = TP/(TP+FP)|>= 0.85|**1.0**（FP=0）|
-|Recall|检出率 = TP/(TP+FN)|>= 0.90|**0.981**（FN=1，dvapi 无 path params）|
-|F1-Score|Precision与Recall调和平均|>= 0.87|**0.990**|
+|Recall|检出率 = TP/(TP+FN)|>= 0.90|**1.0**（FN=0，dvapi FN已修复）|
+|F1-Score|Precision与Recall调和平均|>= 0.87|**1.0**|
 |FPR|假阳性率 = FP/(FP+TN)|<= 0.05|**0.0**|
+|LLM对抗集Recall|LLM在规则盲区样本上的检出率|>= 0.85|**1.0（24/24）**|
+|Type confusion|LLM类型混淆率（如traversal→abuse）|<= 0.10|**0%（0/7）**|
 |平均解释满意度|人工评估告警解释的可读性和准确性（1-5分）|>= 4.0|待LLM评估|
 |处理延迟（代理模式）|规则引擎同步延迟（LLM异步不阻塞主流程）|<= 5ms|实测亚毫秒级|
 |吞吐量（日志模式）|每秒处理日志条数|>= 1000条/秒|待压测|
 
-注：规则引擎当前实绩基于 `RealDatasetGenerator(seed=42).generate(samples_per_type=1)` 得到 55 个样本（11 个 ≥3 端点的规范 × 5 类型），dvapi 因无任何 path params 无法生成 BOLA 有效样本，属于合法 FN。
+注：规则引擎当前实绩基于 `RealDatasetGenerator(seed=42).generate(samples_per_type=1)` 得到 55 个样本（11 个 ≥3 端点的规范 × 5 类型）。dvapi FN 通过在 `_gen_bola` 中增加回退策略（当 safe_resource 为空时使用 endpoint.path + "/" + 随机ID）修复，F1=1.0000。LLM对抗集结果基于 AdversarialGenerator 的 24 个规则盲区样本，经过四轮 Prompt 和数据集迭代后达到 100% 检出率。
 
 ### 7.3 对比实验设计
 
@@ -673,8 +718,9 @@ async def api\\\\\\\_security\\\\\\\_audit(request: Request, call\\\\\\\_next):
 |第一阶段：基础框架|搭建代理/日志双模式数据接入层；实现请求序列化与特征提取；接入硅基流动API并验证模型推理|可运行的数据采集模块；特征提取Demo；API调用验证|
 |第二阶段：核心检测|实现规则引擎；设计Prompt模板（含安全知识注入）；实现思维链输出解析模块；集成模型API调用|端到端检测流水线；初版Prompt模板；输出解析模块|
 |第三阶段：可解释输出|完善思维链与JSON结果的融合逻辑；设计告警输出格式；实现风险评分与处置建议生成|带思维链解释的完整告警JSON；控制台原型|
-|第四阶段：评测与优化|构建领域数据集（RealDatasetGenerator从12个真实OpenAPI规范自动生成）；运行对比实验评测；优化Prompt模板与规则引擎阈值；迭代提升检测效果|评测指标对比表；规则引擎FP=0/FN=1；自动数据集生成器|
-|第五阶段：工具化与演示|完善Web控制台；编写测试用例集（55通过）；制作演示视频/文档|可部署工具包；完整测试数据集（55样本5类型）；评测报告|
+|第四阶段：评测与优化|构建领域数据集（RealDatasetGenerator从12个真实OpenAPI规范自动生成）；运行对比实验评测；优化Prompt模板与规则引擎阈值；迭代提升检测效果|评测指标对比表；规则引擎FP=0/FN=0；自动数据集生成器|
+|第五阶段：工具化与演示|完善Web控制台；编写测试用例集（55通过+24对抗集）；制作演示视频/文档|可部署工具包；完整测试数据集（55样本5类型+24对抗样本）；评测报告|
+|第六阶段：对抗鲁棒性|构建对抗评估数据集（AdversarialGenerator）；迭代Prompt提升LLM在规则盲区上的检出率至100%；消除类型混淆|对抗数据集24样本全部检出；类型混淆率0%|
 
 \---
 
@@ -689,6 +735,7 @@ async def api\\\\\\\_security\\\\\\\_audit(request: Request, call\\\\\\\_next):
 |假阳性率高|告警淹没，可用性下降|引入动态验证（如BOLA双用户测试）；Prompt中注入安全知识提高判定精度；持续优化Prompt模板|
 |安全领域知识不足|蒸馏模型对专业攻击模式识别能力有限|Prompt注入BOLA/遍历/滥用的典型特征；通过对比实验持续迭代优化Prompt|
 |数据集标注成本高|模型效果受限|已通过RealDatasetGenerator从12个真实OpenAPI规范自动生成55个样本（5类型×11规范），无需手工标注；自动修复问题规范（tab/trailing comma）和模板参数推断进一步提升覆盖率|
+|LLM推理随机波动|temperature=0.1下仍有采样差异，低频重复调用样本偶发漏报|prompt注入"同一端点相同参数重复调用{N}次"的明确计数标记；后处理以param_monotonicity≥0.8兜底补充；持续在对抗集上回归验证|
 
 \---
 

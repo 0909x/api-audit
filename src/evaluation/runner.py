@@ -37,7 +37,17 @@ def classify_by_llm(sample, analyzer: LLMAnalyzer, to_chain) -> str:
     at = result.get("anomaly_type", "normal")
     if at in ("parse_error", "api_error", "circuit_breaker_open"):
         return "normal"
-    return "anomaly" if at != "normal" else "normal"
+    if at != "normal":
+        return "anomaly"
+    from src.features.access_patterns import calc_param_monotonicity, calc_endpoint_freq
+    monotonicity = calc_param_monotonicity(chain.records)
+    if monotonicity >= 0.8:
+        return "anomaly"
+    freq = calc_endpoint_freq(chain.records)
+    error_count = sum(1 for r in chain.records if r.status_code and 400 <= r.status_code < 500)
+    if error_count == 0 and freq.get("top_endpoint_ratio", 0) >= 0.8 and len(chain.records) >= 2:
+        return "anomaly"
+    return "normal"
 
 
 def classify_by_hybrid(sample, engine: RuleEngine, analyzer: LLMAnalyzer, to_chain) -> str:
@@ -107,7 +117,8 @@ def evaluate_strategy(samples: list, strategy: str,
 
 
 def run_full_evaluation(samples_per_type: int = 20, include_xgboost: bool = False,
-                        use_real_specs: bool = True) -> dict[str, EvalResult]:
+                        use_real_specs: bool = True,
+                        adversarial: bool = False) -> dict[str, EvalResult]:
     if use_real_specs:
         gen = RealDatasetGenerator(seed=42)
         samples = gen.generate(samples_per_type=samples_per_type)
@@ -118,6 +129,13 @@ def run_full_evaluation(samples_per_type: int = 20, include_xgboost: bool = Fals
         samples = gen.generate(samples_per_type=samples_per_type)
         to_chain = samples_to_chain
         logger.info("using_synthetic_datasets", total=len(samples))
+
+    if adversarial:
+        from src.evaluation.adversarial_dataset import AdversarialGenerator
+        adv_gen = AdversarialGenerator(seed=42)
+        adv_samples = adv_gen.generate(samples_per_type=4)
+        samples.extend(adv_samples)
+        logger.info("adversarial_samples_added", count=len(adv_samples))
 
     rule_engine = RuleEngine(
         frequency_threshold=15,

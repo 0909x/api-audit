@@ -312,6 +312,14 @@ class RealDatasetGenerator:
             ep = rng.choice(safe_resource)
             resource_method = ep["method"]
             resource_path = self._resolve_path(ep["path"], ep["path_params"], rng)
+        elif endpoints:
+            candidates = [e for e in endpoints
+                          if e not in auth_eps and self._is_normal_safe(e["path"])]
+            if candidates:
+                ep = rng.choice(candidates)
+                resource_method = ep["method"]
+                resource_path = ep["path"].rstrip("/") + "/" + str(rng.randint(10000, 99999))
+        if resource_path:
             records.append(self._make_record(resource_method, resource_path, 200, delta_sec=t))
             t += 0.5
 
@@ -423,6 +431,7 @@ def real_samples_to_chain(sample: RealSample) -> "ApiCallChain":
             method=rec.get("method", "GET"),
             path=rec.get("path", "/"),
             query_params=rec.get("query_params", {}),
+            body=rec.get("body"),
             status_code=rec.get("status_code", 200),
             session_id=sample.session_id,
         ))

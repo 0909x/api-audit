@@ -1,5 +1,7 @@
+import re
 import structlog
 from statistics import mean, stdev
+from collections import Counter
 from typing import Optional
 from src.ingestion.models import RequestRecord
 
@@ -63,6 +65,60 @@ def calc_param_reuse_ratio(records: list[RequestRecord]) -> float:
     return round(reuse_count / total_pairs, 4)
 
 
+def _endpoint_group(record: RequestRecord) -> str:
+    segs = record.path.strip("/").split("/")
+    normalized = []
+    for seg in segs:
+        if re.search(r'\d', seg):
+            normalized.append("{param}")
+        else:
+            normalized.append(seg)
+    return f"{record.method} /{'/'.join(normalized)}"
+
+
+def calc_param_monotonicity(records: list[RequestRecord]) -> float:
+    group_values = {}
+    for r in records:
+        group = _endpoint_group(r)
+        vals = []
+        for seg in r.path.strip("/").split("/"):
+            m = re.search(r'(\d+)$', seg)
+            if m:
+                vals.append(int(m.group(1)))
+        for v in r.query_params.values():
+            try:
+                vals.append(int(v))
+            except (ValueError, TypeError):
+                pass
+        if vals:
+            group_values.setdefault(group, []).append(vals)
+    ratios = []
+    for vals_list in group_values.values():
+        if len(vals_list) < 2:
+            continue
+        primary = [v[0] for v in vals_list if v]
+        if len(primary) < 2:
+            continue
+        inc = sum(1 for i in range(1, len(primary)) if primary[i] > primary[i-1])
+        ratios.append(inc / (len(primary) - 1))
+    if not ratios:
+        return 0.0
+    return round(sum(ratios) / len(ratios), 4)
+
+
+def calc_endpoint_freq(records: list[RequestRecord]) -> dict:
+    groups = [_endpoint_group(r) for r in records]
+    counter = Counter(groups)
+    total = len(records) or 1
+    top = counter.most_common(1)
+    dist = dict(counter.most_common(10))
+    return {
+        "distribution": dist,
+        "top_endpoint": top[0][0] if top else "",
+        "top_endpoint_ratio": round(top[0][1] / total, 4) if top else 0.0,
+    }
+
+
 def compute_all_features(records: list[RequestRecord]) -> dict:
     return {
         "inter_api_access_duration": calc_inter_api_access_duration(records),
@@ -70,4 +126,6 @@ def compute_all_features(records: list[RequestRecord]) -> dict:
         "sequence_length": calc_sequence_length(records),
         "num_client_error": calc_num_client_error(records),
         "param_reuse_ratio": calc_param_reuse_ratio(records),
+        "param_monotonicity": calc_param_monotonicity(records),
+        "endpoint_freq": calc_endpoint_freq(records),
     }

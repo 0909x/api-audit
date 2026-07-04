@@ -34,7 +34,8 @@ def print_sep(title: str = ""):
         print("=" * w)
 
 
-def run_demo(samples_per_type: int = 2, use_llm: bool = False, use_synthetic: bool = False):
+def run_demo(samples_per_type: int = 2, use_llm: bool = False, use_synthetic: bool = False,
+             adversarial: bool = False):
     print_sep("API安全审计工具 - 端到端演示")
     print(f"模式: {'合成数据' if use_synthetic else '真实OpenAPI规范'}")
     print(f"LLM分析: {'启用' if use_llm else '仅规则引擎'}")
@@ -53,6 +54,13 @@ def run_demo(samples_per_type: int = 2, use_llm: bool = False, use_synthetic: bo
         samples = gen.generate(samples_per_type=samples_per_type)
         to_chain = real_samples_to_chain
         print(f"    真实规范数据集: {len(samples)} 个样本 ({len(gen.specs)} 个规范)")
+
+    if adversarial:
+        from src.evaluation.adversarial_dataset import AdversarialGenerator
+        adv_gen = AdversarialGenerator(seed=42)
+        adv_samples = adv_gen.generate(samples_per_type=4)
+        samples.extend(adv_samples)
+        print(f"    追加LLM对抗数据集: {len(adv_samples)} 个样本")
 
     # 2. 初始化引擎
     rule_engine = RuleEngine(
@@ -226,6 +234,8 @@ if __name__ == "__main__":
     parser.add_argument("--samples", type=int, default=2, help="每类样本数 (默认2)")
     parser.add_argument("--llm", action="store_true", help="启用LLM分析 (需配置API Key)")
     parser.add_argument("--synthetic", action="store_true", help="使用合成数据集 (默认使用真实OpenAPI规范)")
+    parser.add_argument("--adversarial", action="store_true", help="追加LLM对抗数据集 (24个样本)")
     args = parser.parse_args()
 
-    sys.exit(run_demo(samples_per_type=args.samples, use_llm=args.llm, use_synthetic=args.synthetic))
+    sys.exit(run_demo(samples_per_type=args.samples, use_llm=args.llm,
+                      use_synthetic=args.synthetic, adversarial=args.adversarial))
