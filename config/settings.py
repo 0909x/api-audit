@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     siliconflow_api_url: str = "https://api.siliconflow.cn/v1"
     llm_model: str = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
     llm_temperature: float = 0.1
-    llm_max_tokens: int = 4096
+    llm_max_tokens: int = 8192
     llm_max_retries: int = 3
     llm_circuit_breaker_threshold: int = 5
     llm_circuit_breaker_cooldown: int = 60

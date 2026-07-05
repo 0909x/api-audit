@@ -221,7 +221,7 @@ def run_demo(samples_per_type: int = 2, use_llm: bool = False, use_synthetic: bo
         print(f"  alert_id: {alert.alert_id}")
         print(f"  type: {alert.anomaly_type}  severity: {alert.severity}  confidence: {alert.confidence}")
         print(f"  summary: {alert.explanation.summary[:80]}...")
-        print(f"  recommendation: {alert.explanation.recommendation[:80]}...")
+        print(f"  risk: {alert.explanation.risk_assessment[:80]}...")
         print()
 
     print_sep("演示完成")

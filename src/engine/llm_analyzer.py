@@ -126,6 +126,10 @@ class LLMAnalyzer:
         for flag in bola_flags:
             lines.append(f"可疑标记: {flag}")
 
+        priv_flags = self._detect_privilege_abuse(records)
+        for flag in priv_flags:
+            lines.append(f"可疑标记: {flag}")
+
         return "\n".join(lines)
 
     @staticmethod
@@ -170,3 +174,25 @@ class LLMAnalyzer:
                         for res in sorted(common):
                             flags.append(f"资源ID {res} 被用户 {s1['user']} 和 {s2['user']} 同时访问，存在BOLA(越权)嫌疑")
         return flags
+
+    @staticmethod
+    def _detect_privilege_abuse(records: list) -> list[str]:
+        PRIV_ENDPOINTS = [
+            "reports/summary", "admin", "articles/force",
+            "checkout", "payments/charge", "export", "batch/process",
+        ]
+        flags = []
+        total = len(records)
+        if total > 3:
+            return flags
+        last_user = None
+        for r in records:
+            if r.method == "POST" and "/login" in r.path:
+                last_user = r.query_params.get("user", "unknown")
+            for ep in PRIV_ENDPOINTS:
+                if ep in r.path:
+                    if last_user:
+                        flags.append(f"用户 {last_user} 在无前置业务操作情况下直接调用终态端点 {r.path}，疑似权限越界或接口滥用")
+                    else:
+                        flags.append(f"未登录状态下直接调用终态端点 {r.path}，疑似接口滥用")
+        return list(set(flags))

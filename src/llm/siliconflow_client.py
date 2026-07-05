@@ -46,7 +46,7 @@ class SiliconFlowClient:
         base_url: str = "https://api.siliconflow.cn/v1",
         model: str = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
         temperature: float = 0.1,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         max_retries: int = 3,
         circuit_breaker_threshold: int = 5,
         circuit_breaker_cooldown: int = 60,
@@ -157,6 +157,25 @@ def parse_model_output(raw_output: str) -> dict:
             result["chain_of_thought"] = chain_of_thought
         return result
     except json.JSONDecodeError:
+        pass
+
+    # 尝试修复截断 JSON: 补全尾部、字段名、引号等
+    repaired = json_part
+    if repaired.count('"') % 2 != 0:
+        repaired += '"'
+    if not repaired.endswith("}"):
+        repaired += "}"
+    # 补全截断的字段值
+    repaired = re.sub(r'"reasoning"\s*:\s*"[^"]*$', r'"reasoning": "模型输出截断，部分内容丢失"', repaired)
+    repaired = re.sub(r'"confidence"\s*:\s*\d+\.?\d*[^,}\s]', lambda m: re.sub(r'([^0-9eE.+\-]).*$', r'\1', m.group(0)), repaired)
+    try:
+        result = json.loads(repaired)
+        if isinstance(result.get("reasoning"), str) and len(result["reasoning"]) < 30 and chain_of_thought:
+            result["chain_of_thought"] = chain_of_thought
+        if not result.get("reasoning"):
+            result["reasoning"] = "模型输出截断，原始输出包含合法JSON"
+        return result
+    except (json.JSONDecodeError, ValueError):
         return {
             "is_anomaly": False,
             "anomaly_type": "parse_error",
