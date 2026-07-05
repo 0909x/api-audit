@@ -188,7 +188,7 @@ for i in range(len(chain) - 1):
 安全知识参考（请重点参考以下判定逻辑）：
 - BOLA（越权）：调用序列中出现"登录(Token_A) → 获取资源ID → 登出 → 登录(Token_B) → 用Token_B访问同一资源ID"的模式，即不同认证身份访问相同资源ID，且返回200时判定为BOLA越权。注意：BOLA不需要大量请求，只要出现"不同Token访问同一资源"即可判定。跨会话BOLA：用户A访问某资源ID后登出，用户B登入后访问同一资源ID也构成BOLA。
 - 参数遍历：对同一端点发起请求，参数值呈线性递增或均匀分布（即使请求次数少于20次）。典型特征：路径参数单调递增（如 /api/notes/Ab1000 → Ab1001 → Ab1002），步长固定。注意请求次数少但参数值严格递增也算遍历。
-- 接口滥用：非业务逻辑顺序调用（如未登录直接访问订单），或单一接口高频调用（>正常均值10倍），或同一参数被重复调用。
+- 接口滥用：非业务逻辑顺序调用（如未登录直接访问订单），或单一接口高频调用（>正常均值10倍），或同一参数被重复调用。特别注意：普通用户访问标注了[管理员权限]或[需特定角色]的端点（如reports/summary、admin、force删除等），即使单次调用也构成权限越界型滥用。
 
 特别注意：
 - 请求序列中即使大部分请求看似正常，只要其中存在上述任何一种模式，就应判定为异常
@@ -198,7 +198,7 @@ for i in range(len(chain) - 1):
 
 推理过程请控制在200字以内，简明扼要。
 最终必须且仅输出以下JSON格式（不要输出其他内容）：
-{"is_anomaly": true/false, "anomaly_type": "bola/traversal/abuse/normal", "confidence": 0.0-1.0, "reasoning": "中文解释，50字以内"}
+{"is_anomaly": true/false, "anomaly_type": "bola/traversal/abuse/normal", "confidence": 0.0-1.0, "reasoning": "中文解释，200字以内"}
 ```
 
 **用户提示（User Prompt）**：
@@ -241,6 +241,7 @@ PetStore v1.0, 12 端点:
 - `可疑标记: 单一端点占比极高且参数单调递增，高度疑似参数遍历`
 - `可疑标记: 同一端点相同参数重复调用 {N} 次，疑似接口滥用`
 - `可疑标记: 资源ID {id} 被用户 {u1} 和 {u2} 同时访问，存在BOLA(越权)嫌疑`
+- `可疑标记: 用户 {user} 在无前置业务操作情况下直接调用终态端点 {path}，疑似权限越界或接口滥用`
 
 #### 4.3.2 思维链输出解析策略
 
@@ -250,30 +251,41 @@ DeepSeek-R1-0528-Qwen3-8B的输出格式通常为 `<think >推理过程</think >
 import re
 import json
 
-def parse\\\\\\\_model\\\\\\\_output(raw\\\\\\\_output: str) -> dict:
+def parse_model_output(raw_output: str) -> dict:
     """解析思维链蒸馏模型的输出，分离推理过程与结构化结果"""
-    
-    # 提取<think >标签内的思维链作为reasoning依据
-    think\\\\\\\_match = re.search(r'<think >(.\\\\\\\*?)</think >', raw\\\\\\\_output, re.DOTALL)
-    chain\\\\\\\_of\\\\\\\_thought = think\\\\\\\_match.group(1).strip() if think\\\\\\\_match else ""
-    
+
+    # 提取<think>标签内的思维链作为reasoning依据
+    think_match = re.search(r"<think>(.*?)</think>", raw_output, re.DOTALL)
+    chain_of_thought = think_match.group(1).strip() if think_match else ""
+
     # 提取思维链之后的内容作为JSON结果
-    json\\\\\\\_part = re.sub(r'<think >.\\\\\\\*?</think >', '', raw\\\\\\\_output, flags=re.DOTALL).strip()
-    
+    json_part = re.sub(r"<think>.*?</think>", "", raw_output, flags=re.DOTALL).strip()
+
     try:
-        result = json.loads(json\\\\\\\_part)
-        # 如果模型reasoning较简略，用思维链补充丰富
-        if len(result.get("reasoning", "")) < 30 and chain\\\\\\\_of\\\\\\\_thought:
-            result\\\\\\\["chain\\\\\\\_of\\\\\\\_thought"] = chain\\\\\\\_of\\\\\\\_thought
+        result = json.loads(json_part)
+        if isinstance(result.get("reasoning"), str) and len(result["reasoning"]) < 30 and chain_of_thought:
+            result["chain_of_thought"] = chain_of_thought
         return result
     except json.JSONDecodeError:
-        # 降级处理：将整个输出作为reasoning返回
+        pass
+
+    # 尝试修复截断JSON: 补全尾部、字段名、引号等
+    repaired = json_part
+    if repaired.count('"') % 2 != 0:
+        repaired += '"'
+    if not repaired.endswith("}"):
+        repaired += "}"
+    repaired = re.sub(r'"reasoning"\s*:\s*"[^"]*$', r'"reasoning": "模型输出截断"', repaired)
+    try:
+        result = json.loads(repaired)
+        return result
+    except (json.JSONDecodeError, ValueError):
         return {
-            "is\\\\\\\_anomaly": False,
-            "anomaly\\\\\\\_type": "parse\\\\\\\_error",
+            "is_anomaly": False,
+            "anomaly_type": "parse_error",
             "confidence": 0.0,
-            "reasoning": f"模型输出解析失败，原始输出：{raw\\\\\\\_output\\\\\\\[:200]}",
-            "chain\\\\\\\_of\\\\\\\_thought": chain\\\\\\\_of\\\\\\\_thought
+            "reasoning": f"模型输出解析失败，原始输出：{raw_output[:200]}",
+            "chain_of_thought": chain_of_thought,
         }
 ```
 
@@ -299,13 +311,13 @@ response = client.chat.completions.create(
         {"role": "user", "content": api\\\\\\\_sequence\\\\\\\_prompt}
     ],
     temperature=0.1,     # 低温度保证输出稳定性
-    max\\\\\\\_tokens=4096,
+    max_tokens=8192,
     stream=False
 )
 
-raw\\\\\\\_output = response.choices\\\\\\\[0].message.content
-# 送入parse\\\\\\\_model\\\\\\\_output()进行思维链解析
-result = parse\\\\\\\_model\\\\\\\_output(raw\\\\\\\_output)
+raw_output = response.choices[0].message.content
+# 送入parse_model_output()进行思维链解析
+result = parse_model_output(raw_output)
 ```
 
 **异步批量调用（日志分析模式）**：
@@ -329,7 +341,7 @@ async def analyze_sessions(sessions: list[str]) -> list[dict]:
                 {"role": "user", "content": session_prompt}
             ],
             temperature=0.1,
-            max_tokens=4096
+            max_tokens=8192
         )
         for session_prompt in sessions
     ]
@@ -424,6 +436,11 @@ BOLA是方向一的核心检测目标之一。实现采用**规则引擎前置 +
 * 若服务端返回200而非403，则确认BOLA漏洞
 * 参考Palo Alto Networks BOLABuster的实现思路 [$TRAE\_REF](https://essay.utwente.nl/fileshare/file/107423/Johansens_BA_BIT.pdf)（在docs文件夹中）
 
+**BOLA预检测标记**中 `_detect_privilege_abuse()` 按 login→终端端点模式检测权限越界型接口滥用：
+
+* 当记录数 ≤ 3 且存在对高风险终态端点（reports/summary、admin、articles/force、checkout、payments/charge、export）的访问时
+* 注入 `可疑标记: 用户 {user} 在无前置业务操作情况下直接调用终态端点 {path}，疑似权限越界或接口滥用`，引导LLM关注单次权限越界调用
+
 ### 4.5 参数遍历检测
 
 参数遍历攻击的典型特征是在短时间内对某一参数进行大量枚举（如`?id=1,2,3...`）。检测逻辑：
@@ -485,7 +502,7 @@ DeepSeek-R1-0528-Qwen3-8B 原始输出
          ▼
 ┌─────────────────┐
 │ 解释融合与评分   │  <-- 合并思维链推理依据与JSON结果
-│                 │      生成结构化告警 + 风险评分 + 处置建议
+│                 │      生成结构化告警 + 风险评分
 └─────────────────┘
 ```
 
@@ -495,31 +512,27 @@ DeepSeek-R1-0528-Qwen3-8B 原始输出
 
 ```json
 {
-  "alert\\\\\\\_id": "ALT-20250703-001",
-  "timestamp": "2025-07-03T14:32:18+08:00",
+  "alert_id": "ALT-20260705-001",
+  "timestamp": "2026-07-05T10:30:00+08:00",
+  "status": "confirmed",
   "severity": "high",
-  "anomaly\\\\\\\_type": "parameter\\\\\\\_traversal",
-  "confidence": 0.94,
-  "session\\\\\\\_id": "sess\\\\\\\_a1b2c3d4",
-  "source\\\\\\\_ip": "10.0.1.15",
-  "affected\\\\\\\_endpoints": \\\\\\\["/api/v1/users/{id}"],
+  "anomaly_type": "traversal",
+  "confidence": 0.95,
+  "session_id": "sess_001",
+  "source_ip": "192.168.1.100",
+  "affected_endpoints": ["GET /api/notes/{id}"],
   "explanation": {
-    "summary": "检测到用户'zhangsan'在12秒内对'/api/v1/users/{id}'端点发起了28次请求，参数'id'从10001连续递增至10028，响应码以200和404交替出现，符合参数遍历攻击的典型模式。",
-    "chain\\\\\\\_of\\\\\\\_thought": "分析该会话的调用序列：第一步，检查调用频率，28次/12秒，正常用户均值2次/分钟，频率异常偏高。第二步，检查参数分布，参数'id'从10001到10028严格线性递增，Shannon熵为6.98（接近理论最大值7.0），呈典型的枚举分布。第三步，检查响应码，404占比46%，表明大量请求命中了不存在的资源ID。综合以上三个维度，判定为参数遍历攻击。",
-    "key\\\\\\\_indicators": \\\\\\\[
-      "请求频率异常：28次/12秒，远超正常用户行为（均值2次/分钟）",
-      "参数分布均匀：参数'id'呈严格线性递增，Shannon熵为6.98（接近理论最大值7.0）",
-      "响应码异常：404占比46%，表明大量请求命中了不存在的资源ID"
-    ],
-    "risk\\\\\\\_assessment": "攻击者可能正在批量枚举用户ID，试图获取未授权的用户信息。该行为可能导致用户隐私数据泄露。",
-    "recommendation": "建议立即对该IP实施速率限制，并检查'/api/v1/users/{id}'端点是否缺少基于用户身份的授权校验。"
+    "summary": "检测到会话 sess_001 在 5 秒内对同一端点发起 8 次请求，路径参数从 1000 递增至 1008，步长固定为 1，符合参数遍历攻击特征",
+    "chain_of_thought": "用户连续访问 /api/notes/1000 到 /api/notes/1008，每次递增 1，无其他端点访问，高度疑似自动化遍历工具行为",
+    "key_indicators": ["请求总量: 8次", "平均请求间隔: 0.6s", "参数单调递增指数: 1.0"],
+    "risk_assessment": "检测到会话 sess_001 在 5 秒内对同一端点发起 8 次请求，路径参数从 1000 递增至 1008，步长固定为 1，符合参数遍历攻击特征"
   },
-  "raw\\\\\\\_features": {
-    "request\\\\\\\_count": 28,
-    "time\\\\\\\_window\\\\\\\_sec": 12,
-    "param\\\\\\\_entropy": 6.98,
-    "not\\\\\\\_found\\\\\\\_ratio": 0.46,
-    "param\\\\\\\_pattern": "sequential\\\\\\\_increment"
+  "raw_features": {
+    "request_count": 8,
+    "time_window_sec": 5.0,
+    "param_entropy": 0.95,
+    "not_found_ratio": 0.0,
+    "param_pattern": "linear:+1"
   }
 }
 ```
@@ -736,6 +749,7 @@ async def api\\\\\\\_security\\\\\\\_audit(request: Request, call\\\\\\\_next):
 |安全领域知识不足|蒸馏模型对专业攻击模式识别能力有限|Prompt注入BOLA/遍历/滥用的典型特征；通过对比实验持续迭代优化Prompt|
 |数据集标注成本高|模型效果受限|已通过RealDatasetGenerator从12个真实OpenAPI规范自动生成55个样本（5类型×11规范），无需手工标注；自动修复问题规范（tab/trailing comma）和模板参数推断进一步提升覆盖率|
 |LLM推理随机波动|temperature=0.1下仍有采样差异，低频重复调用样本偶发漏报|prompt注入"同一端点相同参数重复调用{N}次"的明确计数标记；后处理以param_monotonicity≥0.8兜底补充；持续在对抗集上回归验证|
+|JSON输出截断|LLM输出超max_tokens导致JSON解析失败|parse_model_output增加截断修复逻辑（补全引号、括号）；max_tokens从4096扩大至8192|
 
 \---
 
