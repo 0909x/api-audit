@@ -13,7 +13,7 @@ SYSTEM_PROMPT = """你是一位API安全审计专家，擅长通过分析API调�
 
 推理过程请控制在200字以内，简明扼要。
 最终必须且仅输出以下JSON格式（不要输出其他内容）：
-{"is_anomaly": true/false, "anomaly_type": "bola/traversal/abuse/normal", "confidence": 0.0-1.0, "reasoning": "中文解释，50字以内"}"""
+{"is_anomaly": true/false, "anomaly_type": "bola/traversal/abuse/normal", "confidence": 0.0-1.0, "reasoning": "中文解释，200字以内"}"""
 
 
 def build_user_prompt(

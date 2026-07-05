@@ -8,7 +8,6 @@ class AlertExplanation(BaseModel):
     chain_of_thought: str = ""
     key_indicators: list[str] = Field(default_factory=list)
     risk_assessment: str = ""
-    recommendation: str = ""
 
 
 class RawFeatures(BaseModel):
@@ -54,10 +53,4 @@ ALERT_TYPE_LABELS = {
     "traversal": "参数遍历攻击",
     "abuse": "接口滥用",
     "normal": "正常",
-}
-
-RECOMMENDATIONS = {
-    "bola": "建议立即检查该端点是否在参数级别实施了基于用户身份的授权校验。可参考OWASP API Security Top 10 #1 (BOLA) 进行修复。",
-    "traversal": "建议对该端点实施速率限制，并对参数值进行随机化或基于Session的Token化，避免使用连续递增的整数ID。",
-    "abuse": "建议对异常高频的IP或用户实施临时封禁，并检查相关接口是否存在批量操作未做限流控制的缺陷。",
 }

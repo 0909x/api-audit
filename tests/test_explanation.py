@@ -54,7 +54,7 @@ class TestGenerateAlert:
         alert = generate_alert(chain, llm_result, alert_index=3)
         assert alert.anomaly_type == "bola"
         assert alert.severity == "critical"
-        assert "BOLA" in alert.explanation.summary
+        assert alert.explanation.summary == "检测到越权"
 
     def test_abuse_alert(self):
         chain = make_chain(session_id="sess_abuse", records=[

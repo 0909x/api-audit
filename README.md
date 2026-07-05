@@ -196,6 +196,62 @@ python scripts/run_proxy.py
 
 ---
 
+## API 接口（供前端消费）
+
+### GET /api/v1/alerts
+分页获取告警列表（按时间倒序）。
+
+**Response 200**
+```json
+{
+  "total": 42,
+  "items": [
+    {
+      "alert_id": "ALT-20260705-001",
+      "timestamp": "2026-07-05T10:30:00+08:00",
+      "status": "confirmed",
+      "severity": "high",
+      "anomaly_type": "traversal",
+      "confidence": 0.95,
+      "session_id": "sess_001",
+      "source_ip": "192.168.1.100",
+      "affected_endpoints": ["GET /api/notes/{id}"],
+      "explanation": {
+        "summary": "检测到会话 sess_001 在 5 秒内对同一端点发起 8 次请求，路径参数从 1000 递增至 1008，步长固定为 1，符合参数遍历攻击特征",
+        "chain_of_thought": "用户连续访问 /api/notes/1000 到 /api/notes/1008，每次递增 1，无其他端点访问，高度疑似自动化遍历工具行为",
+        "key_indicators": ["请求总量: 8次", "平均请求间隔: 0.6s", "参数单调递增指数: 1.0"],
+        "risk_assessment": "检测到会话 sess_001 在 5 秒内对同一端点发起 8 次请求，路径参数从 1000 递增至 1008，步长固定为 1，符合参数遍历攻击特征"
+      },
+      "raw_features": {
+        "request_count": 8,
+        "time_window_sec": 5.0,
+        "param_entropy": 0.95,
+        "not_found_ratio": 0.0,
+        "param_pattern": "linear:+1"
+      }
+    }
+  ]
+}
+```
+
+### GET /api/v1/alerts/{alert_id}
+获取单条告警详情，返回结构与列表项一致。
+
+### GET /api/v1/stats
+告警统计汇总。
+
+**Response 200**
+```json
+{
+  "total": 42,
+  "by_severity": {"critical": 5, "high": 12, "medium": 8, "info": 17},
+  "by_type": {"bola": 5, "traversal": 12, "abuse": 8, "normal": 17},
+  "by_status": {"preliminary": 3, "confirmed": 39, "dismissed": 0}
+}
+```
+
+---
+
 ## 数据集
 
 - **12 个真实 OpenAPI 规范** 位于 `data/`（dvapi, dvws, vapi, vampi, capital, RESTaurant, crAPI, memos, OWASP Juice Shop 等）
