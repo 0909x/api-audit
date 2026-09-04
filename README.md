@@ -41,14 +41,8 @@ pyproject.toml 中已声明的核心依赖：
 
 ### 3. 配置
 
-所有配置集中在 `config/settings.py`，可通过 `.env` 文件覆盖。当前已内嵌测试用 API Key：
+所有配置集中在 `config/settings.py`，可通过 `.env` 文件覆盖。
 
-```ini
-# .env
-SILICONFLOW_API_KEY=sk-yxbgyidxbppxmvofcxncyoiurivwvoqhrranssqsjzdenywt
-LLM_MODEL=deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
-LOG_LEVEL=INFO
-```
 
 ---
 
