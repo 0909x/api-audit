@@ -6,8 +6,8 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     # LLM
-    siliconflow_api_key: str = "sk-yxbgyidxbppxmvofcxncyoiurivwvoqhrranssqsjzdenywt"
-    siliconflow_api_url: str = "https://api.siliconflow.cn/v1"
+    siliconflow_api_key: str = " "
+    siliconflow_api_url: str = " "
     llm_model: str = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
     llm_temperature: float = 0.1
     llm_max_tokens: int = 8192
