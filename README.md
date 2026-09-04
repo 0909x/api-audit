@@ -52,7 +52,7 @@ LOG_LEVEL=INFO
 
 ---
 
-## 数据模型（前端关注）
+## 数据模型
 
 ### Alert（告警）
 
@@ -196,61 +196,7 @@ python scripts/run_proxy.py
 
 ---
 
-## API 接口（供前端消费）
 
-### GET /api/v1/alerts
-分页获取告警列表（按时间倒序）。
-
-**Response 200**
-```json
-{
-  "total": 42,
-  "items": [
-    {
-      "alert_id": "ALT-20260705-001",
-      "timestamp": "2026-07-05T10:30:00+08:00",
-      "status": "confirmed",
-      "severity": "high",
-      "anomaly_type": "traversal",
-      "confidence": 0.95,
-      "session_id": "sess_001",
-      "source_ip": "192.168.1.100",
-      "affected_endpoints": ["GET /api/notes/{id}"],
-      "explanation": {
-        "summary": "检测到会话 sess_001 在 5 秒内对同一端点发起 8 次请求，路径参数从 1000 递增至 1008，步长固定为 1，符合参数遍历攻击特征",
-        "chain_of_thought": "用户连续访问 /api/notes/1000 到 /api/notes/1008，每次递增 1，无其他端点访问，高度疑似自动化遍历工具行为",
-        "key_indicators": ["请求总量: 8次", "平均请求间隔: 0.6s", "参数单调递增指数: 1.0"],
-        "risk_assessment": "检测到会话 sess_001 在 5 秒内对同一端点发起 8 次请求，路径参数从 1000 递增至 1008，步长固定为 1，符合参数遍历攻击特征"
-      },
-      "raw_features": {
-        "request_count": 8,
-        "time_window_sec": 5.0,
-        "param_entropy": 0.95,
-        "not_found_ratio": 0.0,
-        "param_pattern": "linear:+1"
-      }
-    }
-  ]
-}
-```
-
-### GET /api/v1/alerts/{alert_id}
-获取单条告警详情，返回结构与列表项一致。
-
-### GET /api/v1/stats
-告警统计汇总。
-
-**Response 200**
-```json
-{
-  "total": 42,
-  "by_severity": {"critical": 5, "high": 12, "medium": 8, "info": 17},
-  "by_type": {"bola": 5, "traversal": 12, "abuse": 8, "normal": 17},
-  "by_status": {"preliminary": 3, "confirmed": 39, "dismissed": 0}
-}
-```
-
----
 
 ## 数据集
 
@@ -267,91 +213,7 @@ python scripts/run_proxy.py
 
 ---
 
-## 前端开发任务（Streamlit 控制台）
 
-目标文件：`src/console/streamlit_app.py`（尚未创建）
-
-### 建议的功能面板
-
-1. **告警概览仪表板**
-   - 告警总数、各 severity 分布（柱状图/饼图）
-   - 实时告警流（最近 N 条）
-   - 按时间轴展示告警密度
-
-2. **告警详情页**
-   - 展示单条告警完整信息：summary / chain_of_thought / key_indicators / risk_assessment / recommendation
-   - 原始特征：request_count, time_window, param_entropy, not_found_ratio
-   - 受影响的端点列表
-
-3. **数据过滤与搜索**
-   - 按 severity（critical/high/medium/info）
-   - 按 anomaly_type（bola/traversal/abuse）
-   - 按 status（preliminary/confirmed/dismissed）
-   - 按时间范围
-   - 按 session_id 搜索
-
-4. **告警管理操作**
-   - 确认/忽略/关闭告警（更新 status）
-   - 导出告警列表
-
-### 数据对接方式
-
-```python
-import streamlit as st
-from src.engine.alert_store import AlertStore
-from src.engine.risk_scorer import compute_risk_score
-
-# 初始化 store（模块级缓存，避免多页重建）
-if "alert_store" not in st.session_state:
-    st.session_state.alert_store = AlertStore()
-
-store = st.session_state.alert_store
-
-# 获取统计数据
-stats = store.count()        # → {"total": ..., "by_severity": {...}, "by_type": {...}, "by_status": {...}}
-alerts = store.get_all(limit=100)
-
-# 遍历告警
-for alert in alerts:
-    risk_score = compute_risk_score(alert)
-    st.write(f"{alert.alert_id} | {alert.anomaly_type} | {alert.severity} | {alert.confidence}")
-    st.write(alert.explanation.summary)
-    st.write(alert.explanation.recommendation)
-```
-
-### 注意事项
-
-- 请尽量避免在界面中出现 Windows 终端无法显示的 Unicode 字符（emoji 等），如需图形提示请使用颜色、图标组件
-- AlertStore 当前是内存存储（重启丢失），如需持久化可后续对接 SQLite
-
----
-
-## 项目结构（前端相关部分）
-
-```
-src/
-├── engine/
-│   ├── alert.py              # Alert, AlertExplanation, RawFeatures ← ★ 核心数据模型
-│   ├── alert_store.py        # AlertStore ← ★ 数据访问层
-│   ├── risk_scorer.py        # compute_risk_score() ← ★ 风险评分
-│   ├── pipeline.py           # AuditPipeline（规则+LLM流水线）
-│   ├── explanation.py        # generate_alert() 生成告警
-│   ├── rule_engine.py        # 规则引擎
-│   └── llm_analyzer.py       # LLM 异步分析、序列摘要、BOLA 预检测
-├── console/
-│   └── streamlit_app.py      # ← 待开发的 Streamlit 控制台
-├── features/
-│   └── access_patterns.py    # 参数单调性、端点频率分布等访问模式特征
-├── evaluation/
-│   ├── adversarial_dataset.py # 对抗评估数据集生成（6类型×4样本=24）
-│   └── runner.py             # 评测执行器
-├── llm/
-│   └── prompts.py            # System/User Prompt 模板
-└── ingestion/
-    └── models.py             # RequestRecord 请求记录
-```
-
----
 
 ## 评测结果
 
